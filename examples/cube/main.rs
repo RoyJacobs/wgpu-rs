@@ -2,6 +2,7 @@
 mod framework;
 
 use bytemuck::{Pod, Zeroable};
+use cgmath::SquareMatrix;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -95,6 +96,10 @@ struct Example {
     index_count: usize,
     bind_group: wgpu::BindGroup,
     uniform_buf: wgpu::Buffer,
+    // ADDED FOR REPRO BEGIN
+    local_bind_group: wgpu::BindGroup,
+    local_uniform_buf: wgpu::Buffer,
+    // ADDED FOR REPRO END
     pipeline: wgpu::RenderPipeline,
 }
 
@@ -156,9 +161,21 @@ impl framework::Example for Example {
                 },
             ],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            bind_group_layouts: &[&bind_group_layout],
+        // ADDED FOR REPRO BEGIN
+        let local_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            bindings: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStage::VERTEX,
+                    ty: wgpu::BindingType::UniformBuffer { dynamic: false },
+                },
+            ],
         });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            bind_group_layouts: &[&bind_group_layout, &local_bind_group_layout],
+        });
+        // ADDED FOR REPRO END
 
         // Create the texture
         let size = 256u32;
@@ -231,6 +248,27 @@ impl framework::Example for Example {
             label: None,
         });
 
+        // ADDED FOR REPRO BEGIN
+        let local_mx = cgmath::Matrix4::<f32>::identity();
+        let local_mx_ref: &[f32; 16] = local_mx.as_ref();
+        let local_uniform_buf = device.create_buffer_with_data(
+            bytemuck::cast_slice(local_mx_ref),
+            wgpu::BufferUsage::UNIFORM | wgpu::BufferUsage::COPY_DST,
+        );
+
+        // Create bind group
+        let local_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &local_bind_group_layout,
+            bindings: &[
+                wgpu::Binding {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(local_uniform_buf.slice(..)),
+                },
+            ],
+            label: None,
+        });
+        // ADDED FOR REPRO END
+
         // Create the render pipeline
         let vs_bytes = include_bytes!("shader.vert.spv");
         let fs_bytes = include_bytes!("shader.frag.spv");
@@ -295,6 +333,10 @@ impl framework::Example for Example {
             index_count: index_data.len(),
             bind_group,
             uniform_buf,
+            // ADDED FOR REPRO BEGIN
+            local_bind_group,
+            local_uniform_buf,
+            // ADDED FOR REPRO END
             pipeline,
         };
         (this, None)
@@ -340,10 +382,40 @@ impl framework::Example for Example {
                 depth_stencil_attachment: None,
             });
             rpass.set_pipeline(&self.pipeline);
+
+            // ADDED FOR REPRO BEGIN
+            let local_mx = cgmath::Matrix4::<f32>::identity();
+            let local_mx_ref: &[f32; 16] = local_mx.as_ref();
+            _queue.write_buffer(
+                &self.local_uniform_buf,
+                0,
+                bytemuck::cast_slice(local_mx_ref),
+            );
+            // ADDED FOR REPRO END
+
             rpass.set_bind_group(0, &self.bind_group, &[]);
+            rpass.set_bind_group(1, &self.local_bind_group, &[]);
             rpass.set_index_buffer(self.index_buf.slice(..));
             rpass.set_vertex_buffer(0, self.vertex_buf.slice(..));
             rpass.draw_indexed(0..self.index_count as u32, 0, 0..1);
+
+            // ADDED FOR REPRO BEGIN
+            // Update the local uniform buf to have a small translation, and draw the cube again
+            let local_mx = cgmath::Matrix4::<f32>::from_translation(cgmath::Vector3::<f32>::new(3.0, 0.0, 0.0));
+            let local_mx_ref: &[f32; 16] = local_mx.as_ref();
+            _queue.write_buffer(
+                &self.local_uniform_buf,
+                0,
+                bytemuck::cast_slice(local_mx_ref),
+            );
+
+            rpass.set_bind_group(0, &self.bind_group, &[]);
+            rpass.set_bind_group(1, &self.local_bind_group, &[]);
+            rpass.set_index_buffer(self.index_buf.slice(..));
+            rpass.set_vertex_buffer(0, self.vertex_buf.slice(..));
+            rpass.draw_indexed(0..self.index_count as u32, 0, 0..1);
+            // ADDED FOR REPRO END
+
         }
 
         encoder.finish()
